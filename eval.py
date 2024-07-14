@@ -1,4 +1,7 @@
-import os, sys
+import os
+import sys
+import argparse
+from omegaconf import OmegaConf
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -19,10 +22,10 @@ from src.utils import set_seed
 def run(args: DictConfig):
     set_seed(args.seed)
     savedir = os.path.dirname(args.model_path)
-    
+
     # ------------------
     #    Dataloader
-    # ------------------    
+    # ------------------
     test_set = ThingsMEGDataset("test", args.data_dir)
     test_loader = torch.utils.data.DataLoader(
         test_set, shuffle=False, batch_size=args.batch_size, num_workers=args.num_workers
@@ -34,20 +37,32 @@ def run(args: DictConfig):
     model = BasicConvClassifier(
         test_set.num_classes, test_set.seq_len, test_set.num_channels
     ).to(args.device)
-    model.load_state_dict(torch.load(args.model_path, map_location=args.device))
+    model.load_state_dict(torch.load(
+        args.model_path, map_location=args.device), strict=False)
 
     # ------------------
     #  Start evaluation
-    # ------------------ 
-    preds = [] 
+    # ------------------
+    preds = []
     model.eval()
-    for X, subject_idxs in tqdm(test_loader, desc="Validation"):        
+    for X, subject_idxs in tqdm(test_loader, desc="Validation"):
         preds.append(model(X.to(args.device)).detach().cpu())
-        
+
     preds = torch.cat(preds, dim=0).numpy()
     np.save(os.path.join(savedir, "submission"), preds)
     cprint(f"Submission {preds.shape} saved at {savedir}", "cyan")
 
 
 if __name__ == "__main__":
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument("--config", type=str,
+    #                     required=True)    # configファイルのパスを指定
+    # # 使用するgpuの数はデフォルトでdevice_count()(使用できるgpuの数)になる
+    # parser.add_argument("--num_gpus", type=int,
+    #                     default=torch.cuda.device_count())
+
+    # parser.add_argument("--model_path", type=str, required=True)
+    # args = parser.parse_args()
+
+    # cfg = OmegaConf.load(args.config)  # configファイルをcfgとして読み込む
     run()
