@@ -1,20 +1,25 @@
 import os
-import sys
-import argparse
-from omegaconf import OmegaConf
+
+import hydra
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torchmetrics import Accuracy
-import hydra
-from omegaconf import DictConfig
 import wandb
+from omegaconf import DictConfig, OmegaConf
 from termcolor import cprint
+from torchmetrics import Accuracy
 from tqdm import tqdm
 
+from src.conformer import BrainWaveConformer
 from src.datasets import ThingsMEGDataset
-from src.models import BasicConvClassifier
+from src.model_improved import BasicConvClassifierWithSubject
+from src.models import (
+    BasicConvClassifier,
+    BasicConvClassifierWithSubject,
+    ImprovedClassifierWithAttention,
+)
 from src.utils import set_seed
+from src.wav2vecmodel import ImprovedBrainwaveClassifier
 
 
 @torch.no_grad()
@@ -28,17 +33,38 @@ def run(args: DictConfig):
     # ------------------
     test_set = ThingsMEGDataset("test", args.data_dir)
     test_loader = torch.utils.data.DataLoader(
-        test_set, shuffle=False, batch_size=args.batch_size, num_workers=args.num_workers
+        test_set,
+        shuffle=False,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
     )
 
     # ------------------
     #       Model
     # ------------------
-    model = BasicConvClassifier(
-        test_set.num_classes, test_set.seq_len, test_set.num_channels
+    # モデルの初期化
+    model = BasicConvClassifierWithSubject(
+        test_set.num_classes,
+        test_set.seq_len,
+        test_set.num_channels,
+        num_subjects=4,  # 被験者の数を指定
     ).to(args.device)
-    model.load_state_dict(torch.load(
-        args.model_path, map_location=args.device), strict=False)
+
+    # model = BasicConvClassifier(
+    #     test_set.num_classes, test_set.seq_len, test_set.num_channels
+    # ).to(args.device)
+    # model = BasicConvClassifierWithSubject(
+    #     test_set.num_classes,
+    #     test_set.seq_len,
+    #     test_set.num_channels,
+    #     num_subjects=4,  # 被験者の数を指定
+    # ).to(args.device)
+    # model = ImprovedBrainwaveClassifier(
+    #     test_set.num_classes, test_set.seq_len, test_set.num_channels, 4
+    # ).to(args.device)
+    model.load_state_dict(
+        torch.load(args.model_path, map_location=args.device), strict=False
+    )
 
     # ------------------
     #  Start evaluation
@@ -46,7 +72,12 @@ def run(args: DictConfig):
     preds = []
     model.eval()
     for X, subject_idxs in tqdm(test_loader, desc="Validation"):
-        preds.append(model(X.to(args.device)).detach().cpu())
+        preds.append(
+            # model(X.to(args.device), subject_idxs.to(args.device)).detach().cpu()
+            model(X.to(args.device), subject_idxs.to(args.device))
+            .detach()
+            .cpu()
+        )
 
     preds = torch.cat(preds, dim=0).numpy()
     np.save(os.path.join(savedir, "submission"), preds)

@@ -17,11 +17,14 @@ from accelerate.utils import LoggerType
 
 # import hydra
 from omegaconf import DictConfig, OmegaConf
+from scipy import signal
+from sklearn.preprocessing import StandardScaler
 
 # import wandb
 from termcolor import cprint
 from torchmetrics import Accuracy
 from tqdm import tqdm
+from transformers import CLIPModel, CLIPProcessor
 
 from src.datasets import ThingsMEGDataset
 from src.lstm import CNNLSTMClassifier
@@ -35,63 +38,29 @@ torch._dynamo.config.suppress_errors = True
 torch._dynamo.config.automatic_dynamic_shapes = False
 
 
-def preprocess_meg(
-    X,
-    sfreq=200,
-    lowcut=1,
-    highcut=80,
-    notch_freq=50,
-    scale=True,
-    baseline_correction=True,
-):
-    # X の形状: (batch_size, channels, time_points)
-    batch_size, num_channels, num_timepoints = X.shape
-    processed_batch = []
+# --- 前処理関数 ---
+def resample(data, new_freq):
+    """脳波データをリサンプリングする関数"""
+    return signal.resample(data, int(data.shape[-1] * new_freq / 200), axis=-1)
 
-    # バッチ全体をCPUに移動し、NumPy配列に変換
-    X_cpu = X.cpu().numpy()
 
-    for i in range(batch_size):
-        x = X_cpu[i]  # (channels, time_points)
+def filter_data(data, low_freq, high_freq):
+    """脳波データをバンドパスフィルタリングする関数"""
+    sos = signal.butter(
+        4, [low_freq, high_freq], btype="bandpass", output="sos", fs=200
+    )
+    return signal.sosfiltfilt(sos, data, axis=-1)
 
-        # MNE Raw オブジェクトの作成
-        ch_names = [f"MEG {j:03d}" for j in range(num_channels)]
-        ch_types = ["mag"] * num_channels
-        info = mne.create_info(ch_names=ch_names, sfreq=sfreq, ch_types=ch_types)
-        raw = mne.io.RawArray(x, info)
 
-        # フィルタリング
-        # ノッチフィルタ（電源ノイズ除去）
-        raw.notch_filter(notch_freq, picks="all", filter_length="auto", phase="zero")
+def scale_data(data):
+    """脳波データを標準化する関数"""
+    scaler = StandardScaler()
+    return scaler.fit_transform(data.reshape(-1, data.shape[-2])).reshape(data.shape)
 
-        # バンドパスフィルタ
-        raw.filter(
-            l_freq=lowcut,
-            h_freq=highcut,
-            picks="all",
-            filter_length="auto",
-            phase="zero",
-        )
 
-        # スケーリング
-        if scale:
-            raw.apply_function(lambda x: (x - x.mean()) / x.std())
-
-        # ベースライン補正
-        if baseline_correction:
-            baseline_duration = min(
-                1.0, num_timepoints / sfreq
-            )  # ベースラインとして使用する時間（秒）、信号長を超えないようにする
-            baseline_end_idx = int(baseline_duration * sfreq)
-            baseline = raw.get_data()[:, :baseline_end_idx]
-            baseline_mean = np.mean(baseline, axis=1)
-            raw._data -= baseline_mean[:, np.newaxis]
-
-        # 処理済みデータの取得
-        processed_batch.append(raw.get_data())
-
-    # 処理済みデータをPyTorchテンソルに変換し、元のデバイスに移動
-    return torch.FloatTensor(np.array(processed_batch)).to(X.device)
+def baseline_correct(data):
+    """脳波データのベースラインを補正する関数"""
+    return data - data.mean(axis=-1, keepdims=True)
 
 
 # config.yamlが渡される

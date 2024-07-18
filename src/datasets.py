@@ -4,9 +4,9 @@ from typing import Tuple
 import mne
 import numpy as np
 import torch
-from termcolor import cprint  # noqa: E402
+from termcolor import cprint
 
-mne.set_log_level("WARNING")  # または 'ERROR'
+mne.set_log_level("WARNING")
 
 
 class ThingsMEGDataset(torch.utils.data.Dataset):
@@ -14,6 +14,7 @@ class ThingsMEGDataset(torch.utils.data.Dataset):
         self,
         split: str,
         data_dir: str = "data",
+        processed_dir: str = "processed_data",
         sfreq=200,
         lowcut=2,
         highcut=60,
@@ -30,8 +31,22 @@ class ThingsMEGDataset(torch.utils.data.Dataset):
         self.highcut = highcut
         self.scale = scale
         self.baseline_correction = baseline_correction
-        # self.num_channels = 275  # CTF 275 systemの総チャンネル数
+
+        # 前処理済みデータのファイルパス
+        self.processed_file = os.path.join(processed_dir, f"{split}_processed_X.pt")
+
+        # 生データを読み込み
         self.X = torch.load(os.path.join(data_dir, f"{split}_X.pt"))
+        self.num_channels = self.X.shape[1]  # チャンネル数を設定
+
+        # 前処理済みデータが存在しない場合は作成
+        if not os.path.exists(self.processed_file):
+            self.X_processed = self.preprocess_all(self.X)
+            os.makedirs(processed_dir, exist_ok=True)
+            torch.save(self.X_processed, self.processed_file)
+        else:
+            self.X_processed = torch.load(self.processed_file)
+
         self.subject_idxs = torch.load(
             os.path.join(data_dir, f"{split}_subject_idxs.pt")
         )
@@ -42,9 +57,14 @@ class ThingsMEGDataset(torch.utils.data.Dataset):
                 len(torch.unique(self.y)) == self.num_classes
             ), "Number of classes do not match."
 
-        print(f"Data shape: {self.X.shape}")
-
+        print(f"Processed data shape: {self.X_processed.shape}")
         print(f"Number of channels: {self.num_channels}")
+
+    def preprocess_all(self, X):
+        processed_data = []
+        for i in range(len(X)):
+            processed_data.append(self.preprocess(X[i]))
+        return torch.stack(processed_data)
 
     def preprocess(self, X):
         # X は (チャンネル数, 時間ステップ数) の形状にする必要がある
@@ -57,10 +77,7 @@ class ThingsMEGDataset(torch.utils.data.Dataset):
         )
         raw = mne.io.RawArray(X, info)
 
-        # # 1. リサンプリング
-        # raw.resample(self.sfreq)
-
-        # 2. フィルタリング
+        # フィルタリング
         raw.filter(
             l_freq=self.lowcut,
             h_freq=self.highcut,
@@ -68,7 +85,7 @@ class ThingsMEGDataset(torch.utils.data.Dataset):
             iir_params={"order": 4, "ftype": "butter"},
         )
 
-        # 3. スケーリング
+        # スケーリング
         if self.scale:
             raw.apply_function(lambda x: (x - x.mean()) / x.std())
 
@@ -86,19 +103,14 @@ class ThingsMEGDataset(torch.utils.data.Dataset):
         return torch.FloatTensor(X)
 
     def __len__(self) -> int:
-        return len(self.X)
+        return len(self.X_processed)
 
     def __getitem__(self, i):
         if hasattr(self, "y"):
-            return self.X[i], self.y[i], self.subject_idxs[i]
+            return self.X_processed[i], self.y[i], self.subject_idxs[i]
         else:
-            return self.X[i], self.subject_idxs[i]
-
-    # propertyとして呼び出すから()いらない
-    @property
-    def num_channels(self) -> int:
-        return self.X.shape[1]
+            return self.X_processed[i], self.subject_idxs[i]
 
     @property
     def seq_len(self) -> int:
-        return self.X.shape[2]
+        return self.X_processed.shape[2]

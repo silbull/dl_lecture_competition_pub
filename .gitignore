@@ -6,7 +6,9 @@ preprocess.py
 eval_omnicampus.py
 .github/
 logs/
-
+Images/
+datas/
+processed_data/
 # -------------------
 #   Python template
 # -------------------
